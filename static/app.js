@@ -1,212 +1,360 @@
-/**
- * A model that represents a single tweet.
- */
-var TweetModel = Backbone.Model.extend({});
+$(function(){
 
-/**
- * A model that represents a collection of Tweets returned via the Twitter search API.
- */
-var TweetCollection = Backbone.Collection.extend({
-	model: TweetModel,
-	initialize: function() {
-		_.bindAll(this, 'url', 'fetch', 'fetchCallback', 'maxId');
-	},
-	url: function() {
-		return "http://search.twitter.com/search.json?&q=" + this.query + "&rpp=" + 
-			this.queryPageSize + "&callback=?";
-	},
-	queryPageSize: 25,
-	query: '',
-	
-	// Since the Twitter search API response isn't a simple JSON array, override the default
-	// fetch behavior with logic that can parse the results.
-	fetch: function(options) {
-		var me = this;
-		$.getJSON(me.url(), 
-			{ 
-				rpp:me.queryPageSize, 
-				q: me.get('query') 
-			}, 
-			function(response) { 
-				me.fetchCallback(response); 
-			},
-			'jsonp'
-		);	
-	},
-	fetchCallback: function(response) {
-		var me = this;
-		me.reset();
-		
-		_.each(response.results, function(tweet, i) {
-		    me.add(new TweetModel({
-		    	  'id': tweet.id,
-		          'createdAt': tweet.created_at,
-		          'profileImageUrl': tweet.profile_image_url,
-		          'user': tweet.from_user,
-		          'text': tweet.text   
-		    }), 
-		    { silent: true }); 
+	String.prototype.linkify = function() {
+		return this.replace(/[A-Za-z]+:\/\/[A-Za-z0-9-_]+\.[A-Za-z0-9-_:%&\?\/.=]+/, function(m) {
+			return m.link(m);
 		});
-		
-		this.trigger('change');
-	},
-	
-	maxId: function() {
-		return this.max(function(tweet) { return tweet.id; });
-	}
-});
+	};
 
+	function relative_time(time_value) {
+		var values = time_value.split(" ");
+		// time_value = values[2] + " " + values[1] + ", " + values[3] + " " + values[5];
+		var parsed_date = Date.parse(time_value);
+		var relative_to = (arguments.length > 1) ? arguments[1] : new Date();
+		var delta = parseInt((relative_to.getTime() - parsed_date) / 1000);
+		delta = delta + (relative_to.getTimezoneOffset() * 60);
 
-
-var TwitterSearch = Backbone.Model.extend({
-	newItemCheckInterval: 30000,
-	queryPageSize: 26,
-	initialize: function(attributes) {
-		_.bindAll(this, 'clear', 'executeTwitterSearch', 'revealLatestTweets', 'fetchNewItemCountCallback');
-		this.bind('change:query', this.queryChanged);
-		
-		this.displayedTweets = new TweetCollection();
-		this.displayedTweets.queryPageSize = this.queryPageSize;
-		
-		this.latestTweets = new TweetCollection();
-		this.latestTweets.queryPageSize = this.queryPageSize;
-		this.latestTweets.bind('change', this.fetchNewItemCountCallback);
-	},
-	queryChanged: function() {
-		// Do initial fetch
-		this.executeTwitterSearch();
-				
-		// Set refresh
-		this.fetchTimer = setInterval(this.executeTwitterSearch, this.newItemCheckInterval);
-	},
-	executeTwitterSearch: function() {
-		this.latestTweets.query = this.get('query');
-		this.latestTweets.fetch();
-	}, 
-	fetchNewItemCountCallback: function(response) {
-		var newItems = 0,
-			me = this;
-
-		if(!this.get('lastRead')) {
-			this.set({ 'lastRead': this.latestTweets.maxId().get('id') });
+		var r = '';
+		if (delta < 60) {
+			r = 'a minute ago';
+		} else if(delta < 120) {
+			r = 'couple of minutes ago';
+		} else if(delta < (45*60)) {
+			r = (parseInt(delta / 60)).toString() + ' minutes ago';
+		} else if(delta < (90*60)) {
+			r = 'an hour ago';
+		} else if(delta < (24*60*60)) {
+			r = '' + (parseInt(delta / 3600)).toString() + ' hours ago';
+		} else if(delta < (48*60*60)) {
+			r = '1 day ago';
+		} else {
+			r = (parseInt(delta / 86400)).toString() + ' days ago';
 		}
-		
-		newItems = this.latestTweets.filter(function(tweet) {
-			return tweet.id > me.get('lastRead');
-		}).length;
-		
-		if(newItems == 0) {
-	       	me.revealLatestTweets(); 
+
+		return r;
+	}
+
+	var app = {
+		mainController: null,
+		models: {},
+		collections: {},
+		views: {}
+	};
+
+	// Search Module
+	//------------------
+	app.models.SearchModel = Backbone.Model.extend({
+		initialize: function() {
+			var type = '';
+			if (this.get('isFB') === true) {
+				type = type + ' f ';
+			}
+			if (this.get('isTwitter') === true) {
+				type = type + ' t ';
+			}
+			this.set('type', type);
+		}
+	});
+
+	app.collections.SearchCollection = Backbone.Collection.extend({
+		model: app.models.SearchModel,
+		initialize: function() {
+		}
+	});
+	app.views.SearchView = Backbone.View.extend({
+		tagName: 'li',
+		className: 'search-item',
+		events: {
+			'click .item': 'research'
+		},
+		initialize: function() {
+			this.render();
+		},
+		render: function() {
+			this.template = _.template($('#search-item-view').html());
+            var dict = this.model.toJSON();
+            var markup = this.template(dict);
+            $(this.el).html(markup);
+            return this;
+		},
+
+		research: function() {
+			application.search(this.model.get('query'), this.model.get('isFB'), this.model.get('isTwitter'));
+		}
+	});
+
+	app.views.SearchHistoryView = Backbone.View.extend({
+		events: {
+		},
+		initialize: function () {
+			this._searchViews = [];
+			this.searchList = this.options.searchList;
+
+			//set event handlers
+			_.bindAll(this, 'onSearchAdd');
+			this.searchList.bind('add', this.onSearchAdd);
+		},
+
+		load: function () {
+		},
+
+		onSearchAdd: function(model) {
+			console.log('search item added', model.get('query'));
+			var searchController = new app.views.SearchView({
+				model: model
+			});
+
+			//display tweet item
+			this._searchViews.push(searchController);
+			this.$('.search-list').append(searchController.render().el);
+		}
+	});
+
+	// Facebook MVC
+	//-----------------
+	app.models.FBFeedModel = Backbone.Model.extend({
+		initialize: function() {
+
+			if (this.get('message') !== undefined) {
+				this.set('text', this.get('message'));
+			} else if (this.get('description') !== undefined) {
+				this.set('text', this.get('description'));
+			} else if (this.get('caption') !== undefined) {
+				this.set('text', this.get('caption'));
+			} else if (this.get('story') !== undefined) {
+				this.set('text', this.get('story'));
+			} else if (this.get('name') !== undefined) {
+				this.set('text', this.get('name'));
+			}
+		}
+	});
+
+	app.collections.FBFeedCollection = Backbone.Collection.extend({
+        model: app.models.FBFeedModel,
+        initialize: function() {
+
+        },
+        url: function() {
+			return 'http://search.twitter.com/search.json?q=' + this.query +  '&rpp=1000' + '&callback=?';
+        },
+        query: '', //default query
+        page: '1',
+        parse: function(resp, xhr) {
+			return resp.results;
         }
-		
-		this.set({
-			'newItemCount': newItems
-		});
-	},
-	revealLatestTweets: function() {
-		this.displayedTweets.reset();
-	   	var me = this,
-	   		maxId = 0;
-	   	$.each(this.latestTweets.models, function(i, val) {
-	   		if(val.get('id') > maxId) {
-	   			maxId = val.get('id');
-	   		}
-	    	me.displayedTweets.add(val);
-	   	});   
-	   	me.set({ 'lastRead': maxId });
-	},
-	clear: function() {
-		clearInterval(this.fetchTimer);
-	}
-});
 
+    });
 
-
-var CreateSearchView = Backbone.View.extend({
-	initialize: function() {
-		_.bindAll(this, 'updateQuery', 'submitSearchClicked', 'queryKeyPress', 'latestTweetsChanged');
-		this.model.latestTweets.bind('change', this.latestTweetsChanged);
-	},
-	events: {
-		"click #submit-search": "submitSearchClicked",
-		"keypress #search-query" : "queryKeyPress"
-	},
-	queryKeyPress: function(event) {
-		if(event.keyCode == 13) {
-			this.updateQuery();
+	app.views.FBFeedController = Backbone.View.extend({
+		tagName: 'li',
+		events: {
+		},
+		initialize: function() {
+			this.render();
+		},
+		render: function() {
+			this.template = _.template($('#fb-feed-view').html());
+            var dict = this.model.toJSON();
+            var markup = this.template(dict);
+            $(this.el).html(markup);
+            return this;
 		}
-	},
-	submitSearchClicked: function() {
-		this.updateQuery();
-	},
-	updateQuery: function() {
-		var value = this.$('#search-query').val();
-		this.model.set({ 'query': value });
-		this.model.set({ 'lastRead': 0 });
-		
-		this.$('.loading-icon').show();
-	},
-	latestTweetsChanged: function() {
-		this.$('.loading-icon').hide();
-	}
-});
+	});
+	// Twitter MVC
+	//-----------------
+	app.models.TweetModel = Backbone.Model.extend({
+		initialize: function() {
+			var txt = this.get('text');
+			this.set('text', txt.linkify());
+			this.set('relative_time', relative_time(this.get('created_at')));
+		}
+	});
 
-/**
- * A view that represents a list of Tweets
- */
-var TweetListView = Backbone.View.extend({
-	initialize: function() {
-		_.bindAll(this, 'render', 'addTweet', 'reset');
-		this.collection.bind('add', this.addTweet);
-		this.collection.bind('reset', this.reset);
-	},
-	render: function() {	
-		var template = '\
-			<div id="new-result-msg"></div> \
-			<ul id="tweet-list"></ul>';
-			
-		$(this.el).html(Mustache.to_html(template));
-		this.tweetList = this.$('#tweet-list');	
-		
-		var me = this;
-		this.collection.each(function(tweet) {
-			var view = new TweetView({ model: tweet  });	
- 			me.tweetList.append(view.render().el);	
-		});			
-	},
-	addTweet: function(tweet) {
- 		var view = new TweetView({ model: tweet  });	
- 		this.tweetList.append(view.render().el);
-	},
-	reset: function() {
-		$(this.el).empty();
-		this.render();
-	}
-});
+	app.collections.TweetCollection = Backbone.Collection.extend({
+        model: app.models.TweetModel,
+        initialize: function() {
 
-/**
- * A view that represents a single Tweet
- */
-var TweetView = Backbone.View.extend({
-	tagName: 'li',
-	initialize: function() {
-		_.bindAll(this, 'render');
-	},
-	render: function() {
-		var template = '\
-			<div class="tweet"> \
-				<div class="profile-image"> \
-					<img src="{{profileImageUrl}}" width="48" height="48" /> \
-				</div> \
-				<div class="tweet-content"> \
-					<div class="tweet-body"><a href="http://www.twitter.com/{{user}}">{{user}}</a>: {{text}}</div> \
-					<div class="posted-date">{{createdAt}}</div> \
-				</div> \
-			</div> \
-			';
+        },
+        url: function() {
+			return 'http://search.twitter.com/search.json?q=' + this.query +  '&rpp=1000' + '&callback=?';
+        },
+        query: '', //default query
+        page: '1',
+        parse: function(resp, xhr) {
+			return resp.results;
+        }
 
-		$(this.el).html(Mustache.to_html(template, this.model.toJSON()));
-		
-		return this;
-	}
+    });
+
+	app.views.TweetController = Backbone.View.extend({
+		tagName: 'li',
+		events: {
+			"click .tweet-reply": "onReply",
+			"click .tweet-retweet": "onRetweet",
+			"click .tweet-favorite": "onFavorite"
+		},
+		initialize: function() {
+			this.render();
+		},
+		render: function() {
+			this.template = _.template($('#tweet-view-new').html());
+            var dict = this.model.toJSON();
+            var markup = this.template(dict);
+            $(this.el).html(markup);
+            return this;
+		},
+		onReply: function() {
+			var url = "https://twitter.com/intent/tweet?in_reply_to=" + this.model.get('id');
+			window.open(url, "_newtab");
+		},
+		onRetweet: function() {
+			var url = "https://twitter.com/intent/retweet?tweet_id=" + this.model.get('id');
+			window.open(url, "_newtab");
+		},
+		onFavorite: function() {
+			var url = "https://twitter.com/intent/favorite?tweet_id=" + this.Model.get('id');
+			window.open(url, "_newtab");
+		}
+
+	});
+
+	// Main App
+	//------------
+	app.mainController = Backbone.View.extend({
+		events: {
+			'submit .tweet-search': 'onSearch',
+			'click #fb-login': 'onFBLogin',
+			'click #fb-logout': 'onFBLogout'
+		},
+		initialize: function () {
+			this._tweetsView = [];
+			this.tweets = new app.collections.TweetCollection();
+			this.fbFeeds = new app.collections.FBFeedCollection();
+			this.searchList = new app.collections.SearchCollection();
+
+			new app.views.SearchHistoryView({
+				el: $('.sidebar-history'),
+				searchList: this.searchList
+			});
+
+			//set event handlers
+			_.bindAll(this, 'onTweetAdd');
+			this.tweets.bind('add', this.onTweetAdd);
+
+			_.bindAll(this, 'onFBFeedAdd');
+			this.fbFeeds.bind('add', this.onFBFeedAdd);
+		},
+
+		loadTweets: function () {
+			var that = this;
+			this.tweets.reset();
+
+			this.tweets.fetch({
+				add: that.onTweetAdd,
+				success: function() {
+				}
+			});
+		},
+
+		incResultCount: function() {
+			var searchCount = parseInt($('.search-count').text(), 10);
+			$('.search-count').text(searchCount + 1);
+		},
+		loadFbFeeds: function() {
+			var that = this;
+			var query = this.fbFeeds.query;
+			this.fbFeeds.reset();
+			FB.api('/me/home?q=' + query, function(res){
+				console.log(res);
+				that.fbFeeds.add(res.data);
+			});
+		},
+		onFBLogin: function() {
+			fbUser.login();
+		},
+		onFBLogout: function() {
+			fbUser.logout();
+		},
+		search: function(query, isFB, isTwitter) {
+
+			$('.title').html('<span class="blue search-count">0</span> results for: "' + query +'"');
+			this.tweets.query = query;
+			this.fbFeeds.query = query;
+			this.$('.tweets-result li').remove();
+
+			//check if new search
+			var newSearch = true;
+			this.searchList.each(function(search) {
+				if (search.get('query') === query) {
+					if (search.get('isFB') === isFB && search.get('isTwitter') === isTwitter) {
+						newSearch = false;
+					}
+				}
+			});
+
+			//if not add to search history
+			if (newSearch) {
+				this.searchList.add({
+					query: query,
+					isFB: isFB,
+					isTwitter: isTwitter
+				});
+			}
+
+			if (isFB) {
+				this.loadFbFeeds();
+			}
+
+			if (isTwitter) {
+				this.loadTweets();
+			}
+		},
+
+		onSearch: function() {
+			var isFB = false;
+			var isTwitter = false;
+
+			//check if Facebook checkbox is checked
+			if ($('input[name="cb-facebook"]:checked').length > 0 ) {
+				isFB = true;
+			}
+
+			//check if Twitter checkbox is checked
+			if ($('input[name="cb-twitter"]:checked').length > 0 ) {
+				isTwitter = true;
+			}
+			//check if new search
+			var query = this.$('.search-query').val();
+			this.search(query, isFB, isTwitter);
+			return false;
+		},
+
+		onTweetAdd: function(model) {
+			this.incResultCount();
+			console.log('tweet added', model.get('text'));
+			var tweetController = new app.views.TweetController({
+				model: model
+			});
+
+			//display tweet item
+			this._tweetsView.push(tweetController);
+			this.$('.tweets-result').append(tweetController.render().el);
+		},
+		onFBFeedAdd: function(model) {
+			this.incResultCount();
+			var fbfeedController = new app.views.FBFeedController({
+				model: model
+			});
+
+			//display tweet item
+			this.$('.tweets-result').append(fbfeedController.render().el);
+		}
+
+	});
+
+	window.application = new app.mainController({
+		el: $('body')
+	});
+
+
 });
